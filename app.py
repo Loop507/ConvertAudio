@@ -3,12 +3,13 @@ import os
 import tempfile
 import subprocess
 import zipfile
+from datetime import datetime
 import streamlit as st
 
 st.set_page_config(page_title="Batch Audio Studio Pro", page_icon="🎵", layout="centered")
 
 st.title("🎵 Batch Audio Studio Pro")
-st.write("Converti, normalizza il volume, regola sample rate/bit-depth e modifica i metadati.")
+st.write("Converti, gestisci i canali (Mono/Stereo), normalizza il volume ed esporta file e report in ZIP.")
 
 SUPPORTED_INPUTS = [
     "wav", "mp3", "aiff", "aif", "ogg", "flac", "m4a", "wma", "aac",
@@ -18,6 +19,7 @@ SUPPORTED_OUTPUTS = ["mp3", "wav", "flac", "aac", "ogg"]
 BITRATES = ["128k", "192k", "256k", "320k"]
 SAMPLE_RATES = {"Originale": None, "44.1 kHz (CD)": "44100", "48 kHz (Video/Pro)": "48000", "96 kHz (Hi-Res)": "96000"}
 BIT_DEPTHS = {"16-bit": "pcm_s16le", "24-bit": "pcm_s24le", "32-bit float": "pcm_f32le"}
+CHANNELS = {"Originale": None, "Mono (1 Canale)": "1", "Stereo (2 Canali)": "2"}
 
 uploaded_files = st.file_uploader("Carica uno o più file audio/video:", type=SUPPORTED_INPUTS, accept_multiple_files=True)
 
@@ -26,28 +28,31 @@ if uploaded_files:
     st.info(f"File caricati: **{len(uploaded_files)}**")
 
     st.markdown("---")
-    st.subheader("⚙️ Formato & Qualità")
+    st.subheader("⚙️ Formato & Canali Audio")
 
     col1, col2 = st.columns(2)
     with col1:
         target_format = st.selectbox("Formato di destinazione:", SUPPORTED_OUTPUTS)
     with col2:
+        channel_choice = st.selectbox("Canali Audio (Mono/Stereo):", list(CHANNELS.keys()))
+        channels = CHANNELS[channel_choice]
+
+    col3, col4 = st.columns(2)
+    with col3:
         if target_format in ["mp3", "aac", "ogg"]:
             bitrate = st.selectbox("Bitrate:", BITRATES, index=3)
         else:
             bitrate = None
-            st.caption("*(Formato lossless: bitrate non richiesto)*")
-
-    col3, col4 = st.columns(2)
-    with col3:
+            st.caption("*(Formato lossless: bitrate fisso)*")
+    with col4:
         sr_choice = st.selectbox("Sample Rate:", list(SAMPLE_RATES.keys()))
         sample_rate = SAMPLE_RATES[sr_choice]
-    with col4:
-        if target_format == "wav":
-            bd_choice = st.selectbox("Profondità di Bit (WAV):", list(BIT_DEPTHS.keys()), index=0)
-            codec_wav = BIT_DEPTHS[bd_choice]
-        else:
-            codec_wav = None
+
+    if target_format == "wav":
+        bd_choice = st.selectbox("Profondità di Bit (WAV):", list(BIT_DEPTHS.keys()), index=0)
+        codec_wav = BIT_DEPTHS[bd_choice]
+    else:
+        codec_wav = None
 
     st.markdown("---")
     st.subheader("🎛️ Moduli di Elaborazione Audio")
@@ -82,6 +87,28 @@ if uploaded_files:
 
         try:
             processed_files = []
+            
+            # Intestazione del report TXT
+            report_lines = [
+                "==========================================",
+                "       REPORT CONVERSIONE AUDIO SYSTEM    ",
+                "==========================================",
+                f"Data elaborazione: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                f"Totale file elaborati: {len(uploaded_files)}",
+                f"Formato Output: {target_format.upper()}",
+                f"Configurazione Canali: {channel_choice}",
+                f"Sample Rate: {sr_choice}",
+                f"Normalizzazione Volume: {'Attiva (-14 LUFS)' if norm_volume else 'Disattivata'}",
+                f"Rimozione Silenzio: {'Attiva' if remove_silence else 'Disattivata'}",
+                "------------------------------------------",
+                "METADATI GENERALI APPLICATI:",
+                f" - Artista: {meta_artist if meta_artist else 'N/D'}",
+                f" - Album: {meta_album if meta_album else 'N/D'}",
+                f" - Anno: {meta_year if meta_year else 'N/D'}",
+                f" - Genere: {meta_genre if meta_genre else 'N/D'}",
+                "==========================================",
+                "DETTAGLIO TRACCE:\n"
+            ]
 
             for idx, uploaded_file in enumerate(uploaded_files, start=1):
                 status_text.text(f"Elaborazione traccia {idx} di {len(uploaded_files)}: {uploaded_file.name}")
@@ -103,6 +130,10 @@ if uploaded_files:
                 tmp_out_path = f"{tmp_in_path}_out.{target_format}"
 
                 cmd = ["ffmpeg", "-y", "-i", tmp_in_path, "-vn"]
+
+                # Gestione Canali (Mono/Stereo)
+                if channels:
+                    cmd.extend(["-ac", channels])
 
                 # Costruzione filtri audio
                 af_filters = []
@@ -153,6 +184,9 @@ if uploaded_files:
                     file_bytes = f.read()
 
                 processed_files.append((new_filename, file_bytes))
+                
+                # Aggiunta traccia al report TXT
+                report_lines.append(f"Traccia #{idx:02d}: {uploaded_file.name} -> {new_filename}")
 
                 os.remove(tmp_in_path)
                 os.remove(tmp_out_path)
@@ -161,46 +195,52 @@ if uploaded_files:
 
             status_text.text("Elaborazione completata!")
 
-            # Gestione Download Intelligente
+            # Generazione del file TXT finale
+            report_content = "\n".join(report_lines)
+
+            # Creazione ZIP con file audio + file info_conversione.txt
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+                for filename, data in processed_files:
+                    zip_file.writestr(filename, data)
+                # Inserimento del report TXT nello ZIP
+                zip_file.writestr("info_conversione.txt", report_content)
+
+            zip_buffer.seek(0)
+            
             if is_single:
                 st.session_state["result_single"] = (processed_files[0][0], processed_files[0][1], target_format)
-                st.session_state.pop("result_zip", None)
-            else:
-                zip_buffer = io.BytesIO()
-                with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-                    for filename, data in processed_files:
-                        zip_file.writestr(filename, data)
-                zip_buffer.seek(0)
-                st.session_state["result_zip"] = (f"audio_convertiti_{target_format}.zip", zip_buffer.getvalue())
-                st.session_state.pop("result_single", None)
+            
+            st.session_state["result_zip"] = (f"audio_convertiti_{target_format}.zip", zip_buffer.getvalue(), report_content)
 
-            st.success("Tutti i file sono stati elaborati correttamente!")
+            st.success("Tutti i file e il report TXT sono pronti per il download!")
 
         except Exception as e:
             st.error(f"Si è verificato un errore: {str(e)}")
 
-# Area Output: Player Anteprima per file singolo o ZIP per file multipli
-if "result_single" in st.session_state:
-    filename, data, fmt = st.session_state["result_single"]
+# Area Output: Player ed opzioni di Download
+if "result_zip" in st.session_state:
+    zip_name, zip_bytes, report_txt = st.session_state["result_zip"]
+    
     st.markdown("---")
     st.subheader("🎧 Anteprima & Download")
-    st.audio(data, format=f"audio/{fmt}")
-    
-    mime_type = "audio/mpeg" if fmt == "mp3" else f"audio/{fmt}"
-    st.download_button(
-        label=f"📥 Scarica {filename}",
-        data=data,
-        file_name=filename,
-        mime=mime_type
-    )
 
-elif "result_zip" in st.session_state:
-    zip_name, zip_bytes = st.session_state["result_zip"]
-    st.markdown("---")
-    st.subheader("📦 Download Archivio")
-    st.download_button(
-        label=f"📦 Scarica Pacchetto ZIP ({zip_name})",
-        data=zip_bytes,
-        file_name=zip_name,
-        mime="application/zip"
-    )
+    if "result_single" in st.session_state:
+        filename, data, fmt = st.session_state["result_single"]
+        st.audio(data, format=f"audio/{fmt}")
+
+    col_d1, col_d2 = st.columns(2)
+    with col_d1:
+        st.download_button(
+            label=f"📦 Scarica ZIP (Audio + info.txt)",
+            data=zip_bytes,
+            file_name=zip_name,
+            mime="application/zip"
+        )
+    with col_d2:
+        st.download_button(
+            label="📄 Scarica solo Report TXT",
+            data=report_txt,
+            file_name="info_conversione.txt",
+            mime="text/plain"
+        )
