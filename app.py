@@ -2,25 +2,25 @@ import io
 import os
 import tempfile
 import subprocess
+import zipfile
 import streamlit as st
 
-st.set_page_config(page_title="Convertitore & Editor Audio", page_icon="🎵", layout="centered")
+st.set_page_config(page_title="Batch Audio Converter & Tag Editor", page_icon="🎵", layout="centered")
 
-st.title("🎵 Convertitore Audio & Estrazione da Video")
-st.write("Carica file audio o video, regola la qualità, rimuovi il silenzio ed esporta il tuo file.")
+st.title("🎵 Conversione Multipla, Rinomina e Metadati")
+st.write("Carica più file WAV, imposta i metadati, la struttura dei nomi e scarica l'archivio ZIP convertito.")
 
-SUPPORTED_INPUTS = [
-    "wav", "mp3", "aiff", "aif", "ogg", "flac", "m4a", "wma", "aac",
-    "mp4", "mkv", "avi", "mov", "webm"
-]
 SUPPORTED_OUTPUTS = ["mp3", "wav", "flac", "aac", "ogg"]
 BITRATES = ["128k", "192k", "256k", "320k"]
 
-uploaded_file = st.file_uploader("Carica un file audio o video:", type=SUPPORTED_INPUTS)
+# Caricamento multiplo dei file WAV
+uploaded_files = st.file_uploader("Carica i tuoi file WAV:", type=["wav"], accept_multiple_files=True)
 
-if uploaded_file is not None:
-    input_ext = uploaded_file.name.split(".")[-1].lower()
-    st.success(f"File caricato correttamente: **{uploaded_file.name}**")
+if uploaded_files:
+    st.info(f"File caricati: **{len(uploaded_files)}**")
+
+    st.markdown("---")
+    st.subheader("⚙️ Configurazione Conversione & Rinomina")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -28,99 +28,102 @@ if uploaded_file is not None:
     with col2:
         bitrate = st.selectbox("Qualità / Bitrate:", BITRATES, index=3)
 
-    st.markdown("---")
-    st.subheader("⚙️ Opzioni di Editing")
-
-    # Nuova funzione: Rimozione Automatica Silenzio
-    remove_silence = st.checkbox("🔇 Rimuovi vuoto/silenzio automatico (inizio e fine)")
-
-    # Taglio Manuale Opzionale
-    enable_trim = st.checkbox("✂️ Taglia traccia manualmente (per secondi)")
-    start_time, end_time = 0, 0
-    if enable_trim:
-        col_t1, col_t2 = st.columns(2)
-        with col_t1:
-            start_time = st.number_input("Inizio (secondi):", min_value=0, value=0, step=1)
-        with col_t2:
-            end_time = st.number_input("Fine (secondi, 0 = disattivato):", min_value=0, value=0, step=1)
-
-    if st.button("Converti ed Elabora"):
-        with st.spinner("Elaborazione in corso con FFmpeg..."):
-            try:
-                # Scrittura del file temporaneo di input
-                with tempfile.NamedTemporaryFile(delete=False, suffix=f".{input_ext}") as tmp_in:
-                    tmp_in.write(uploaded_file.read())
-                    tmp_in_path = tmp_in.name
-
-                tmp_out_path = f"{tmp_in_path}_converted.{target_format}"
-
-                cmd = ["ffmpeg", "-y"]
-
-                # Taglio manuale di inizio
-                if enable_trim and start_time > 0:
-                    cmd.extend(["-ss", str(start_time)])
-
-                cmd.extend(["-i", tmp_in_path])
-
-                # Taglio manuale di fine
-                if enable_trim and end_time > start_time:
-                    cmd.extend(["-to", str(end_time)])
-
-                # Elimina la traccia video se l'input è un file video
-                cmd.append("-vn")
-
-                # Costruzione dei filtri audio
-                af_filters = []
-
-                if remove_silence:
-                    # Rimuove il silenzio iniziale (-45dB), inverte l'audio, rimuove il silenzio finale e reinverte
-                    silence_filter = (
-                        "silenceremove=start_periods=1:start_threshold=-45dB,"
-                        "areverse,"
-                        "silenceremove=start_periods=1:start_threshold=-45dB,"
-                        "areverse"
-                    )
-                    af_filters.append(silence_filter)
-
-                if af_filters:
-                    cmd.extend(["-af", ",".join(af_filters)])
-
-                # Imposta bitrate per MP3, AAC e OGG
-                if target_format in ["mp3", "aac", "ogg"]:
-                    cmd.extend(["-b:a", bitrate])
-
-                cmd.append(tmp_out_path)
-
-                # Esecuzione del processo FFmpeg
-                result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-
-                if result.returncode != 0:
-                    raise Exception(f"Errore FFmpeg: {result.stderr}")
-
-                # Lettura file finale
-                with open(tmp_out_path, "rb") as f:
-                    converted_bytes = f.read()
-
-                # Pulizia file temporanei
-                os.remove(tmp_in_path)
-                os.remove(tmp_out_path)
-
-                base_name = uploaded_file.name.rsplit(".", 1)[0]
-                st.session_state["converted_bytes"] = converted_bytes
-                st.session_state["new_filename"] = f"{base_name}_converted.{target_format}"
-                st.session_state["target_format"] = target_format
-
-                st.success("Elaborazione completata con successo!")
-            except Exception as e:
-                st.error(f"Errore durante l'elaborazione: {str(e)}")
-
-# Bottone Download persistente
-if "converted_bytes" in st.session_state:
-    mime_type = "audio/mpeg" if st.session_state["target_format"] == "mp3" else f"audio/{st.session_state['target_format']}"
+    # Opzioni di Rinomina
+    st.markdown("**Rinomina File**")
+    rename_option = st.radio(
+        "Scegli lo schema per i nomi file:",
+        ["Mantieni nome originale", "Personalizzato con numerazione (es. Traccia_01)"]
+    )
     
+    custom_prefix = "Traccia"
+    if rename_option == "Personalizzato con numerazione (es. Traccia_01)":
+        custom_prefix = st.text_input("Prefisso nome file:", value="Brano")
+
+    # Opzioni Metadati ID3
+    st.markdown("---")
+    st.subheader("🏷️ Tag Metadati (ID3)")
+    
+    col_m1, col_m2 = st.columns(2)
+    with col_m1:
+        meta_artist = st.text_input("Artista:", placeholder="Es. Mario Rossi")
+        meta_album = st.text_input("Album:", placeholder="Es. Il Mio Album")
+    with col_m2:
+        meta_year = st.text_input("Anno:", placeholder="Es. 2026")
+        meta_genre = st.text_input("Genere:", placeholder="Es. Techno / Ambient")
+
+    if st.button("Converti e Scarica ZIP"):
+        with st.spinner("Elaborazione batch in corso..."):
+            try:
+                zip_buffer = io.BytesIO()
+
+                with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+                    for idx, uploaded_file in enumerate(uploaded_files, start=1):
+                        
+                        # Definizione nuovo nome file
+                        if rename_option == "Mantieni nome originale":
+                            base_name = uploaded_file.name.rsplit(".", 1)[0]
+                            new_filename = f"{base_name}.{target_format}"
+                            track_title = base_name
+                        else:
+                            new_filename = f"{custom_prefix}_{idx:02d}.{target_format}"
+                            track_title = f"{custom_prefix} {idx:02d}"
+
+                        # Scrittura input temporaneo
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_in:
+                            tmp_in.write(uploaded_file.read())
+                            tmp_in_path = tmp_in.name
+
+                        tmp_out_path = f"{tmp_in_path}_out.{target_format}"
+
+                        # Costruzione comando FFmpeg con metadati
+                        cmd = ["ffmpeg", "-y", "-i", tmp_in_path]
+
+                        # Inserimento metadati
+                        cmd.extend(["-metadata", f"title={track_title}"])
+                        if meta_artist:
+                            cmd.extend(["-metadata", f"artist={meta_artist}"])
+                        if meta_album:
+                            cmd.extend(["-metadata", f"album={meta_album}"])
+                        if meta_year:
+                            cmd.extend(["-metadata", f"date={meta_year}"])
+                        if meta_genre:
+                            cmd.extend(["-metadata", f"genre={meta_genre}"])
+                        
+                        cmd.extend(["-metadata", f"track={idx}/{len(uploaded_files)}"])
+
+                        # Bitrate per formati compressi
+                        if target_format in ["mp3", "aac", "ogg"]:
+                            cmd.extend(["-b:a", bitrate])
+
+                        cmd.append(tmp_out_path)
+
+                        # Esecuzione conversione
+                        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                        if result.returncode != 0:
+                            raise Exception(f"Errore su {uploaded_file.name}: {result.stderr}")
+
+                        # Aggiunta file convertito all'archivio ZIP
+                        with open(tmp_out_path, "rb") as f:
+                            zip_file.writestr(new_filename, f.read())
+
+                        # Pulizia file temporanei
+                        os.remove(tmp_in_path)
+                        os.remove(tmp_out_path)
+
+                zip_buffer.seek(0)
+                st.session_state["zip_bytes"] = zip_buffer.getvalue()
+                st.session_state["zip_name"] = f"audio_convertiti_{target_format}.zip"
+
+                st.success(f"Tutti i {len(uploaded_files)} file sono stati convertiti e confezionati nello ZIP!")
+
+            except Exception as e:
+                st.error(f"Si è verificato un errore: {str(e)}")
+
+# Bottone Download ZIP
+if "zip_bytes" in st.session_state:
     st.download_button(
-        label=f"📥 Scarica {st.session_state['new_filename']}",
-        data=st.session_state["converted_bytes"],
-        file_name=st.session_state["new_filename"],
-        mime=mime_type
+        label=f"📦 Scarica Pacchetto ZIP ({st.session_state['zip_name']})",
+        data=st.session_state["zip_bytes"],
+        file_name=st.session_state["zip_name"],
+        mime="application/zip"
     )
