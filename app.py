@@ -4,56 +4,97 @@ import tempfile
 import subprocess
 import streamlit as st
 
-st.set_page_config(page_title="Convertitore Audio Online", page_icon="🎵", layout="centered")
+st.set_page_config(page_title="Convertitore & Editor Audio", page_icon="🎵", layout="centered")
 
-st.title("🎵 Convertitore Audio Multiformato")
-st.write("Carica un file audio, seleziona il formato di destinazione e scarica il file convertito.")
+st.title("🎵 Convertitore Audio & Estrazione da Video")
+st.write("Carica file audio o video, regola la qualità, ritaglia la traccia ed esporta l'audio convertito.")
 
-SUPPORTED_INPUTS = ["wav", "mp3", "aiff", "aif", "ogg", "flac", "m4a", "wma", "aac"]
-SUPPORTED_OUTPUTS = ["mp3", "wav", "aiff", "flac", "ogg"]
+# Input estesi anche ai formati video per l'estrazione dell'audio
+SUPPORTED_INPUTS = [
+    "wav", "mp3", "aiff", "aif", "ogg", "flac", "m4a", "wma", "aac",
+    "mp4", "mkv", "avi", "mov", "webm"
+]
+SUPPORTED_OUTPUTS = ["mp3", "wav", "flac", "aac", "ogg"]
+BITRATES = ["128k", "192k", "256k", "320k"]
 
-uploaded_file = st.file_uploader("Carica il tuo file audio:", type=SUPPORTED_INPUTS)
+uploaded_file = st.file_uploader("Carica un file audio o video:", type=SUPPORTED_INPUTS)
 
 if uploaded_file is not None:
     input_ext = uploaded_file.name.split(".")[-1].lower()
     st.success(f"File caricato correttamente: **{uploaded_file.name}**")
 
-    target_format = st.selectbox("Seleziona il formato di output:", SUPPORTED_OUTPUTS)
+    col1, col2 = st.columns(2)
+    with col1:
+        target_format = st.selectbox("Formato di destinazione:", SUPPORTED_OUTPUTS)
+    with col2:
+        bitrate = st.selectbox("Qualità / Bitrate:", BITRATES, index=3)
 
-    if st.button("Converti Ora"):
-        with st.spinner("Conversione in corso con FFmpeg..."):
+    # Sezione Opzionale per il Taglio Audio
+    enable_trim = st.checkbox("✂️ Taglia traccia audio (opzionale)")
+    start_time, end_time = 0, 0
+    if enable_trim:
+        col_t1, col_t2 = st.columns(2)
+        with col_t1:
+            start_time = st.number_input("Inizio (secondi):", min_value=0, value=0, step=1)
+        with col_t2:
+            end_time = st.number_input("Fine (secondi, 0 = fine file):", min_value=0, value=0, step=1)
+
+    if st.button("Converti ed Elabora"):
+        with st.spinner("Elaborazione in corso con FFmpeg..."):
             try:
-                # Crea file temporanei su disco per far lavorare FFmpeg
+                # Scrittura del file di input su disco temporaneo
                 with tempfile.NamedTemporaryFile(delete=False, suffix=f".{input_ext}") as tmp_in:
                     tmp_in.write(uploaded_file.read())
                     tmp_in_path = tmp_in.name
 
                 tmp_out_path = f"{tmp_in_path}_converted.{target_format}"
 
-                # Esegue FFmpeg direttamente da sistema operativo
-                cmd = ["ffmpeg", "-y", "-i", tmp_in_path, tmp_out_path]
+                # Costruzione dinamica del comando FFmpeg
+                cmd = ["ffmpeg", "-y"]
+
+                # Punto di inizio taglio
+                if enable_trim and start_time > 0:
+                    cmd.extend(["-ss", str(start_time)])
+
+                cmd.extend(["-i", tmp_in_path])
+
+                # Punto di fine taglio
+                if enable_trim and end_time > start_time:
+                    cmd.extend(["-to", str(end_time)])
+
+                # Elimina il flusso video se l'input è un video (-vn = no video)
+                cmd.append("-vn")
+
+                # Imposta il bitrate se il formato è compresso
+                if target_format in ["mp3", "aac", "ogg"]:
+                    cmd.extend(["-b:a", bitrate])
+
+                cmd.append(tmp_out_path)
+
+                # Esecuzione del processo di sistema
                 result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
                 if result.returncode != 0:
                     raise Exception(f"Errore FFmpeg: {result.stderr}")
 
-                # Leggi il file convertito in memoria
+                # Lettura del file convertito
                 with open(tmp_out_path, "rb") as f:
                     converted_bytes = f.read()
 
-                # Pulizia dei file temporanei su disco
+                # Pulizia file temporanei
                 os.remove(tmp_in_path)
                 os.remove(tmp_out_path)
 
                 base_name = uploaded_file.name.rsplit(".", 1)[0]
                 st.session_state["converted_bytes"] = converted_bytes
-                st.session_state["new_filename"] = f"{base_name}.{target_format}"
+                st.session_state["new_filename"] = f"{base_name}_converted.{target_format}"
                 st.session_state["target_format"] = target_format
 
-                st.success("Conversione completata con successo!")
+                st.success("Elaborazione completata con successo!")
             except Exception as e:
-                st.error(f"Errore durante la conversione: {str(e)}")
+                st.error(f"Errore durante l'elaborazione: {str(e)}")
 
+# Download Button persistente
 if "converted_bytes" in st.session_state:
     mime_type = "audio/mpeg" if st.session_state["target_format"] == "mp3" else f"audio/{st.session_state['target_format']}"
     
