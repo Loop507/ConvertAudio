@@ -22,27 +22,37 @@ BITRATES = ["128k", "192k", "256k", "320k"]
 SAMPLE_RATES = {"Originale": None, "44.1 kHz (CD)": "44100", "48 kHz (Video/Pro)": "48000"}
 CHANNELS = {"Originale": None, "Mono (1 Canale)": "1", "Stereo (2 Canali)": "2"}
 
-# Funzione per analizzare BPM e Tonalità con Librosa
+# Funzione blindata per BPM e Key via FFmpeg + Librosa
 def detect_bpm_and_key(audio_path):
+    tmp_analysis_wav = f"{audio_path}_analysis.wav"
     try:
-        # Carica i primi 90 secondi dell'audio per velocizzare l'analisi
-        y, sr = librosa.load(audio_path, sr=22050, duration=90)
-        
-        # Calcolo BPM
-        tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
-        bpm = int(round(float(tempo)))
+        # 1. Decodifica l'audio in WAV mono a 22050Hz tramite FFmpeg (funziona su MP3, M4A, MP4, ecc.)
+        cmd = ["ffmpeg", "-y", "-i", audio_path, "-ar", "22050", "-ac", "1", "-t", "90", tmp_analysis_wav]
+        subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
-        # Calcolo Tonalità (Chromagram + Krumhansl-Schmuckler)
+        # 2. Carica il file WAV convertito
+        y, sr = librosa.load(tmp_analysis_wav, sr=22050)
+        
+        # 3. Estrazione sicura del BPM (supporta sia float che array di Numpy)
+        tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
+        tempo_val = np.atleast_1d(tempo)[0]
+        bpm = int(round(float(tempo_val)))
+
+        # 4. Estrazione Tonalità Dominante
         chroma = librosa.feature.chroma_stft(y=y, sr=sr)
         chroma_vals = np.mean(chroma, axis=1)
         notes = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
-        
-        # Individua la nota dominante
-        key_idx = np.argmax(chroma_vals)
+        key_idx = int(np.argmax(chroma_vals))
         estimated_key = notes[key_idx]
+
+        # Pulizia file WAV di analisi
+        if os.path.exists(tmp_analysis_wav):
+            os.remove(tmp_analysis_wav)
 
         return bpm, estimated_key
     except Exception:
+        if os.path.exists(tmp_analysis_wav):
+            os.remove(tmp_analysis_wav)
         return "N/D", "N/D"
 
 uploaded_files = st.file_uploader("Carica uno o più file audio/video:", type=SUPPORTED_INPUTS, accept_multiple_files=True)
@@ -170,7 +180,7 @@ if uploaded_files:
                 if meta_genre:
                     cmd.extend(["-metadata", f"genre={meta_genre}"])
                 
-                # Inserisci il BPM nei metadati ufficiali dell'audio
+                # Inserimento del BPM nei metadati ufficiali dell'audio
                 if calc_bpm and bpm_val != "N/D":
                     cmd.extend(["-metadata", f"bpm={bpm_val}"])
 
